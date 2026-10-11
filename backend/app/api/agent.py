@@ -5,6 +5,7 @@ from app.core.database import get_db
 from app.models.user import User
 from app.schemas.rag import ChatRequest, AgentRunResult
 from app.api.deps import get_current_user
+from app.core.config import settings
 from app.agents.agent_engine import AgentEngine
 from app.observability.tracer import AIRunTracer
 
@@ -22,13 +23,14 @@ async def run_agent(
     result = await agent_engine.execute_agent(payload.message)
     latency_ms = (time.time() - start_time) * 1000
 
+    active_model = settings.AZURE_OPENAI_DEPLOYMENT if settings.LLM_PROVIDER == "azure" else "mock"
     tools_used = [step.tool_name for step in result.steps_taken]
     await AIRunTracer.log_run(
         db=db,
         user_id=current_user.id,
         repository_id=repo_id,
         feature="agent",
-        model="gpt-4o",
+        model=active_model,
         prompt_tokens=250,
         completion_tokens=len(result.answer.split()),
         latency_ms=latency_ms,

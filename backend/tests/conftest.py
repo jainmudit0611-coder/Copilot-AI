@@ -4,8 +4,14 @@ from httpx import AsyncClient, ASGITransport
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from app.main import app
 from app.core.database import Base, get_db
+from app.core.config import settings
 
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
+
+@pytest.fixture(autouse=True)
+def default_mock_provider_for_unit_tests(monkeypatch):
+    monkeypatch.setattr(settings, "LLM_PROVIDER", "mock")
+    monkeypatch.setattr(settings, "EMBEDDING_PROVIDER", "mock")
 
 @pytest_asyncio.fixture(scope="function")
 async def test_db():

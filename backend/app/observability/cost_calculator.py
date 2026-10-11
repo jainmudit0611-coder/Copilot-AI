@@ -1,4 +1,5 @@
 MODEL_RATES = {
+    "gpt-4.1-mini": {"prompt": 0.00015 / 1000, "completion": 0.0006 / 1000},
     "gpt-4o": {"prompt": 0.005 / 1000, "completion": 0.015 / 1000},
     "text-embedding-3-small": {"prompt": 0.00002 / 1000, "completion": 0.0},
     "mock": {"prompt": 0.00001 / 1000, "completion": 0.00002 / 1000}

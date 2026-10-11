@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.core.database import get_db
+from app.core.config import settings
 from app.models.user import User
 from app.models.file import RepositoryFile
 from app.schemas.rag import TestGenerationRequest, TestGenerationResponse, DocGenerationRequest, DocGenerationResponse
@@ -30,7 +31,10 @@ async def generate_tests(
     llm_provider = get_llm_provider()
     raw_test = await llm_provider.generate(prompt, system_prompt=SYSTEM_TEST_GENERATOR_V1)
 
-    if payload.framework == "pytest":
+    # In Azure mode, utilize real LLM generation; in mock mode or fallback, use standard template specs
+    if settings.LLM_PROVIDER == "azure" and raw_test and len(raw_test.strip()) > 40:
+        test_code = raw_test
+    elif payload.framework == "pytest":
         test_code = f"""import pytest
 from backend.routes.order_routes import create_order, CreateOrderSchema
 
@@ -73,12 +77,13 @@ describe('OrderService', () => {{
 """
 
     latency_ms = (time.time() - start_time) * 1000
+    active_model = settings.AZURE_OPENAI_DEPLOYMENT if settings.LLM_PROVIDER == "azure" else "mock"
     await AIRunTracer.log_run(
         db=db,
         user_id=current_user.id,
         repository_id=repo_id,
         feature="test_generation",
-        model="gpt-4o",
+        model=active_model,
         prompt_tokens=180,
         completion_tokens=220,
         latency_ms=latency_ms
@@ -98,7 +103,14 @@ async def generate_documentation(
     db: AsyncSession = Depends(get_db)
 ):
     start_time = time.time()
-    doc_content = f"""# Repository Architecture & Documentation ({payload.doc_type.upper()})
+    llm_provider = get_llm_provider()
+    prompt = f"Documentation Type: {payload.doc_type}\nRepository: {repo_id}\nGenerate detailed technical documentation."
+    raw_doc = await llm_provider.generate(prompt, system_prompt=SYSTEM_DOC_GENERATOR_V1)
+
+    if settings.LLM_PROVIDER == "azure" and raw_doc and len(raw_doc.strip()) > 50:
+        doc_content = raw_doc
+    else:
+        doc_content = f"""# Repository Architecture & Documentation ({payload.doc_type.upper()})
 
 ## System Overview
 The application is a full-stack e-commerce system comprising a TypeScript/React frontend and a FastAPI Python backend.
@@ -112,13 +124,15 @@ The application is a full-stack e-commerce system comprising a TypeScript/React 
 - PostgreSQL with `pgvector` for code symbol indexing.
 - Redis for distributed session caching and rate limiting.
 """
+
     latency_ms = (time.time() - start_time) * 1000
+    active_model = settings.AZURE_OPENAI_DEPLOYMENT if settings.LLM_PROVIDER == "azure" else "mock"
     await AIRunTracer.log_run(
         db=db,
         user_id=current_user.id,
         repository_id=repo_id,
         feature="doc_generation",
-        model="gpt-4o",
+        model=active_model,
         prompt_tokens=150,
         completion_tokens=250,
         latency_ms=latency_ms

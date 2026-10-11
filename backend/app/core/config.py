@@ -23,9 +23,10 @@ class Settings(BaseSettings):
 
     # AI Configuration
     LLM_PROVIDER: str = "mock" # options: azure, openai, mock
+    EMBEDDING_PROVIDER: Optional[str] = None # options: azure, mock (defaults to LLM_PROVIDER if None)
     AZURE_OPENAI_ENDPOINT: Optional[str] = None
     AZURE_OPENAI_API_KEY: Optional[str] = None
-    AZURE_OPENAI_DEPLOYMENT: str = "gpt-4o"
+    AZURE_OPENAI_DEPLOYMENT: str = "gpt-4.1-mini"
     AZURE_OPENAI_EMBEDDING_DEPLOYMENT: str = "text-embedding-3-small"
     AZURE_OPENAI_API_VERSION: str = "2024-08-01-preview"
 

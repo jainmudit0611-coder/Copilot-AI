@@ -10,6 +10,7 @@ from app.api.deps import get_current_user
 from app.rag.retriever import HybridRetriever
 from app.rag.context_builder import ContextBuilder
 from app.providers.factory import get_llm_provider
+from app.core.config import settings
 from app.observability.tracer import AIRunTracer
 from app.rag.prompts import SYSTEM_CODE_REVIEW_V1
 
@@ -82,12 +83,13 @@ async def review_code(
     db.add(review_rec)
     await db.commit()
 
+    active_model = settings.AZURE_OPENAI_DEPLOYMENT if settings.LLM_PROVIDER == "azure" else "mock"
     await AIRunTracer.log_run(
         db=db,
         user_id=current_user.id,
         repository_id=repo_id,
         feature="code_review",
-        model="gpt-4o",
+        model=active_model,
         prompt_tokens=300,
         completion_tokens=200,
         latency_ms=latency_ms

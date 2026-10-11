@@ -10,6 +10,7 @@ from app.api.deps import get_current_user
 from app.rag.retriever import HybridRetriever
 from app.rag.context_builder import ContextBuilder
 from app.providers.factory import get_llm_provider
+from app.core.config import settings
 from app.observability.tracer import AIRunTracer
 from app.security.injection_guard import PromptInjectionGuard
 
@@ -72,12 +73,13 @@ async def chat_with_repository(
         )
 
     # Log AI run observability metric
+    active_model = settings.AZURE_OPENAI_DEPLOYMENT if settings.LLM_PROVIDER == "azure" else "mock"
     await AIRunTracer.log_run(
         db=db,
         user_id=current_user.id,
         repository_id=repo_id,
         feature="chat",
-        model="gpt-4o",
+        model=active_model,
         prompt_tokens=len(prompt.split()),
         completion_tokens=len(res.answer.split()),
         latency_ms=latency_ms
