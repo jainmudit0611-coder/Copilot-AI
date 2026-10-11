@@ -1,0 +1,26 @@
+{
+  "name": "CodePilot AI — Agentic Code Copilot",
+  "short_name": "CodePilot AI",
+  "description": "AI-powered repository intelligence, code exploration, bug analysis, code review, test generation, and retrieval-augmented code assistance.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0b0f17",
+  "theme_color": "#2563eb",
+  "icons": [
+    {
+      "src": "/favicon.png",
+      "sizes": "32x32",
+      "type": "image/png"
+    },
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
