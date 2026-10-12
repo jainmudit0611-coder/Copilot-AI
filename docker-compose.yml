@@ -23,6 +23,8 @@ services:
     container_name: codepilot-redis
     ports:
       - "6379:6379"
+    volumes:
+      - redisdata:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -37,10 +39,29 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:postgrespassword@postgres:5432/codepilot_db
       REDIS_URL: redis://redis:6379/0
+      QUEUE_MODE: redis
       SECRET_KEY: codepilot-docker-secret-key-32chars
       LLM_PROVIDER: mock
     ports:
       - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.backend
+    container_name: codepilot-worker
+    command: python -m app.worker
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgrespassword@postgres:5432/codepilot_db
+      REDIS_URL: redis://redis:6379/0
+      QUEUE_MODE: redis
+      SECRET_KEY: codepilot-docker-secret-key-32chars
+      LLM_PROVIDER: mock
     depends_on:
       postgres:
         condition: service_healthy
@@ -59,3 +80,4 @@ services:
 
 volumes:
   pgdata:
+  redisdata:

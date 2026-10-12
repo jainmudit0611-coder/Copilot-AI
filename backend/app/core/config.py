@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=(".env", "backend/.env"),
+        env_file=(".env", "../.env", "backend/.env"),
         extra="ignore"
     )
 
@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     # Database & Redis
     DATABASE_URL: str = "sqlite+aiosqlite:///./codepilot.db" # Default fallback for local dev/testing
     REDIS_URL: str = "redis://localhost:6379/0"
+    QUEUE_MODE: str = "redis" # options: redis (production/worker), background_tasks (local in-process fallback)
+    INDEXING_JOB_TIMEOUT_SECONDS: int = 300
+    INDEXING_JOB_MAX_RETRIES: int = 2
 
     # AI Configuration
     LLM_PROVIDER: str = "mock" # options: azure, openai, mock
@@ -44,5 +47,14 @@ class Settings(BaseSettings):
     MAX_REPOSITORY_SIZE_MB: int = 50
     MAX_FILE_SIZE_KB: int = 1024
     RATE_LIMIT_PER_MINUTE: int = 60
+
+    @property
+    def resolved_database_url(self) -> str:
+        if self.DATABASE_URL.startswith("sqlite+aiosqlite:///./"):
+            root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../"))
+            db_name = self.DATABASE_URL.replace("sqlite+aiosqlite:///./", "")
+            abs_db_path = os.path.join(root_dir, db_name).replace("\\", "/")
+            return f"sqlite+aiosqlite:///{abs_db_path}"
+        return self.DATABASE_URL
 
 settings = Settings()

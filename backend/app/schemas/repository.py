@@ -30,3 +30,14 @@ class FileNode(BaseModel):
 
 class FileDetail(FileNode):
     content: str
+
+class IndexingJobResponse(BaseModel):
+    id: str
+    repository_id: str
+    status: str
+    stage: str
+    retry_count: int = 0
+    created_at: Optional[str] = None
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    error: Optional[str] = None

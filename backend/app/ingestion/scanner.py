@@ -10,7 +10,7 @@ IGNORED_DIRS = {
 IGNORED_EXTENSIONS = {
     '.png', '.jpg', '.jpeg', '.gif', '.ico', '.svg', '.woff', '.woff2', '.ttf',
     '.eot', '.mp4', '.webm', '.pdf', '.zip', '.tar', '.gz', '.7z', '.exe', '.dll',
-    '.so', '.dylib', '.pyc', '.pyo', '.lock'
+    '.so', '.dylib', '.pyc', '.pyo', '.lock', '.log', '.tmp'
 }
 
 LANGUAGE_MAP = {

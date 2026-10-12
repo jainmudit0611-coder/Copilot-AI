@@ -14,7 +14,8 @@ from app.api import (
     generator,
     evaluation,
     observability,
-    github
+    github,
+    health
 )
 
 
@@ -50,6 +51,9 @@ async def lifespan(app: FastAPI):
                 demo_user.hashed_password = hash_password(demo_password)
                 await session.commit()
     yield
+    # Cleanup on shutdown
+    from app.core.redis import close_redis_client
+    await close_redis_client()
 
 app = FastAPI(
     title=settings.APP_NAME,
@@ -60,7 +64,14 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -78,6 +89,7 @@ app.include_router(generator.router, prefix="/api/v1")
 app.include_router(evaluation.router, prefix="/api/v1")
 app.include_router(observability.router, prefix="/api/v1")
 app.include_router(github.router, prefix="/api/v1")
+app.include_router(health.router, prefix="/api/v1")
 
 
 @app.get("/")

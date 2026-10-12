@@ -16,25 +16,34 @@
                                                │ REST / SSE
                                                ▼
                   ┌─────────────────────────────────────────────────────────┐
-                  │                 FastAPI Gateway & Auth                  │
+                  │         FastAPI Gateway, Rate Limiter & Auth            │
                   └──────┬─────────────────────┬────────────────────┬───────┘
                          │                     │                    │
+                         │ Enqueue Index Job   │ Hybrid RAG         │ Agent Tool
+                         │ (Lock + Hash + LPUSH)                    │ Loop (5 Steps)
                          ▼                     ▼                    ▼
-              ┌────────────────────┐ ┌──────────────────┐ ┌──────────────────┐
-              │ Ingestion & AST    │ │ Hybrid RAG       │ │ Agent Tool       │
-              │ Code Chunker       │ │ Retriever        │ │ Loop (5 Steps)   │
-              └──────────┬─────────┘ └─────────┬────────┘ └─────────┬────────┘
-                         │                     │                    │
-                         └─────────────────────┼────────────────────┘
-                                               ▼
-                              ┌──────────────────────────────────┐
-                              │ Microsoft Azure AI Foundry /     │
-                              │ Azure OpenAI (GPT-4.1-mini)      │
-                              └────────────────┬─────────────────┘
-                                               ▼
-                              ┌──────────────────────────────────┐
-                              │ PostgreSQL + pgvector & Redis    │
-                              └──────────────────────────────────┘
+              ┌─────────────────────┐  ┌──────────────────┐ ┌──────────────────┐
+              │ Redis 7 / 5.0.14    │  │ Hybrid RAG       │ │ Azure OpenAI     │
+              │ • Queue (FIFO LPUSH)│  │ Retriever        │ │ GPT-4.1-mini     │
+              │ • Mutex Lock (NX EX)│  └─────────┬────────┘ └─────────┬────────┘
+              │ • Job Status Hash   │            │                    │
+              │ • Distributed Limiter│            └────────────────────┘
+              └──────────┬──────────┘
+                         │ BRPOP (Job ID)
+                         ▼
+              ┌──────────────────────────────────────────────┐
+              │ Dedicated Background Worker Process          │
+              │ (python -m app.worker)                       │
+              │ • Heartbeat (codepilot:workers:<id>)         │
+              │ • AST Symbol Parsing & Intelligent Chunking  │
+              │ • Batch Embeddings (Azure text-embedding-3)  │
+              │ • Retry Policy & Exponential Backoff         │
+              │ • Atomic Lua Mutex Release                   │
+              └──────────┬───────────────────────────────────┘
+                         ▼
+              ┌──────────────────────────────────┐
+              │ PostgreSQL + pgvector / SQLite   │
+              └──────────────────────────────────┘
 ```
 
 ---
@@ -212,35 +221,133 @@ All Chat, RAG Retrieval, Bug Analysis, Code Review, Agent, and Test Generation r
 
 ---
 
+## ⚡ Redis Background Processing & Job Queue Architecture
+
+CodePilot AI implements genuine Redis-backed asynchronous background processing for repository indexing, AST chunking, and batch embedding generation.
+
+### Architecture Highlights
+
+- **Queue Library**: Production async Redis queue built directly on `redis.asyncio` using Redis protocol 2 (compatible across Redis 5.0+, Redis 6, Redis 7, Memurai, and cloud-managed caches like Azure Cache for Redis).
+- **Separation of Concerns**: The FastAPI web service accepts index requests, creates persistent tracking records, acquires a distributed deduplication lock, and immediately returns a job ticket (`202 Accepted` / `QUEUED`).
+- **Distributed Deduplication**: `codepilot:lock:index:<repository_id>` acquired with atomic `SET NX EX 300` to prevent duplicate concurrent indexing requests from double-submitting. Released atomically via Lua scripts only upon terminal completion or failure.
+- **Dedicated Worker CLI**: Standalone background worker process (`python -m app.worker`) that consumes jobs via non-blocking `BRPOP` from `codepilot:queue:indexing`.
+- **Worker Heartbeat & Health**: Workers register heartbeats in `codepilot:workers:<worker_id>` with a 15-second TTL, enabling real-time monitoring of active workers in `/api/v1/health`.
+- **Bounded Retry Policy**: Transient errors trigger exponential backoff retries (`INDEXING_JOB_MAX_RETRIES=2`) before transitioning to terminal `FAILED`.
+- **Credential & Payload Isolation**: Redis stores strictly job identifiers and repository IDs—no source code files, access tokens, or sensitive API keys are ever placed on Redis queues.
+
+### Queue Modes
+
+| `QUEUE_MODE` | Description | Worker Process Required | Behavior when Redis Down |
+|---|---|:---:|---|
+| `redis` | **Production Mode**: Full Redis queue, distributed lock, worker process | Yes (`python -m app.worker`) | Returns HTTP 503 (`REDIS_UNAVAILABLE`) with clear diagnostic message |
+| `background_tasks` | **Local In-Process Fallback**: Executes indexing inside FastAPI event loop | No | Runs locally; clearly documented as single-process dev mode |
+
+---
+
+## 🚦 Distributed Rate Limiting
+
+The application includes distributed rate limiting built on atomic Redis pipelines:
+- **Atomic Execution**: Chained `pipe.incr(key)` and `pipe.expire(key, 60)` in an atomic transaction to guarantee race-condition-free counting.
+- **Outage Handling**: When Redis is unreachable, the system gracefully falls back to an in-process sliding window and logs an explicit warning without falsely reporting distributed enforcement.
+- **Observability**: `RateLimiter.get_status()` exposes `is_distributed` and `mode` ("redis" vs "in_memory_fallback") in system health checks.
+
+---
+
+## 🩺 System Health & Observability Endpoints
+
+### 1. `GET /api/v1/health`
+Comprehensive health check reporting database, Redis connection, active workers, queue depth, rate limiter status, and active AI model deployments.
+
+### 2. `GET /api/v1/health/redis`
+Dedicated Redis metrics endpoint for load balancers and container orchestrators.
+
+### 3. `GET /api/v1/repositories/{repo_id}/jobs/{job_id}`
+Authenticated endpoint returning real-time job status (`queued`, `running`, `completed`, `failed`), execution stage (`PARSING`, `CHUNKING`, `EMBEDDING`, `COMPLETED`), retry count, and timestamps.
+
+---
+
+## 🚀 Local Development Setup (Windows & Docker)
+
+### Option A: Local Windows (PowerShell with Redis or Docker)
+
+1. **Start Redis Server**:
+```powershell
+# Option 1: Start Redis container via Docker:
+docker run -d -p 6379:6379 --name codepilot-redis redis:7-alpine
+
+# Option 2: Run native Windows Redis, Memurai, or WSL Redis:
+# redis-server
+
+# Verify Redis is responding:
+# redis-cli ping  # Returns PONG
+```
+> *Tip*: If you prefer not to run Redis during local offline development, set `QUEUE_MODE=background_tasks` in `.env` to execute indexing in-process using FastAPI `BackgroundTasks`.
+
+2. **Start Background Indexing Worker**:
+```powershell
+# In PowerShell Terminal 2:
+cd backend
+.\venv\Scripts\python -m app.worker
+```
+
+3. **Start FastAPI Backend**:
+```powershell
+# In PowerShell Terminal 3:
+cd backend
+.\venv\Scripts\uvicorn app.main:app --reload --port 8000
+```
+
+4. **Verify Health Check**:
+```powershell
+curl http://localhost:8000/api/v1/health
+curl http://localhost:8000/api/v1/health/redis
+```
+
+### Option B: Docker Compose
+
+If Docker is available, start Redis, PostgreSQL with pgvector, backend, and worker together:
+```powershell
+docker compose up -d
+docker compose ps
+docker compose logs -f worker
+```
+
+---
+
 ## 🧪 Running Automated Tests
 
-CodePilot AI includes unit tests and an explicitly enabled integration test suite:
+CodePilot AI includes unit tests, Redis queue tests, live Redis integration tests, and live Azure tests:
 
-### 1. Run Unit Tests (Mock Mode)
-Runs 33 comprehensive unit tests validating authentication, RAG retrieval, AST parsing, secret scanning, Azure provider error handling, URL resolution, and cost calculations:
-
+### 1. Run All Backend Tests (53 passing, 56 total with live Azure)
 ```powershell
-# From repository root
-.\backend\venv\Scripts\pytest -v
+cd backend
+.\venv\Scripts\pytest -v
 ```
 
-### 2. Run Azure Provider Unit Tests
-Validates Azure error classification (401, 404, 429, 500, timeouts) with mocked HTTP responses:
-
+### 2. Run Redis Queue Unit Tests (Mock Mode)
+Validates job enqueueing, deduplication locks, status transitions, and rate limiting with mocks:
 ```powershell
-.\backend\venv\Scripts\pytest backend\tests\test_azure_provider.py -v
+cd backend
+.\venv\Scripts\pytest tests/test_redis_queue.py -v
 ```
 
-### 3. Run Live Azure Integration Tests
-Executes real network requests against your live Azure AI Foundry deployment (`gpt-4.1-mini`):
-
+### 3. Run Live Redis Integration Tests
+Validates real Redis connectivity, atomic concurrency rate limiting, lock deduplication, multi-process worker execution (`python -m app.worker`), and retry backoff against a live Redis instance:
 ```powershell
+cd backend
+.\venv\Scripts\pytest tests/test_redis_integration.py -v
+```
+
+### 4. Run Live Azure Integration Tests
+Executes real network requests against your live Azure AI Foundry deployment (`gpt-4.1-mini` and `text-embedding-3-small`):
+```powershell
+cd backend
 $env:RUN_LIVE_AZURE_TESTS="1"
-.\backend\venv\Scripts\pytest backend\tests\test_azure_integration.py -v
+.\venv\Scripts\pytest tests/test_azure_integration.py -v
 $env:RUN_LIVE_AZURE_TESTS="0"
 ```
 
-### 4. Run Frontend Production Build & Typecheck
+### 5. Run Frontend Production Build & Typecheck
 ```powershell
 cd frontend
 npm run build
@@ -248,16 +355,17 @@ npm run build
 
 ---
 
-## 🔧 Troubleshooting Common Azure Errors
+## 🔧 Troubleshooting Matrix
 
 | Error Code / Symptom | Root Cause | Resolution |
 |---|---|---|
-| `AI_AUTHENTICATION_ERROR` (401/403) | Invalid `AZURE_OPENAI_API_KEY` or wrong endpoint | Verify the API key in `.env` under Azure AI Foundry Project Overview -> Keys. Ensure no surrounding whitespace. |
+| `REDIS_UNAVAILABLE` (503) | `QUEUE_MODE=redis` but Redis server is not running | Start Redis (`redis-server.exe` or `docker compose up -d redis`) or set `QUEUE_MODE=background_tasks` for in-memory dev. |
+| `INDEXING_IN_PROGRESS` (409) | Duplicate indexing request while a job is already queued/running | Wait for active job to finish or verify job status via `GET /api/v1/repositories/{id}/jobs/{job_id}`. Deduplication lock has a 300s safety TTL. |
+| `RATE_LIMIT_EXCEEDED` (429) | Per-minute request threshold exceeded | Distributed counter enforces 60 req/min. Requests will automatically succeed in the next 60s sliding window. |
+| `AI_AUTHENTICATION_ERROR` (401/403) | Invalid `AZURE_OPENAI_API_KEY` or wrong endpoint | Verify the API key in `.env` under Azure AI Foundry Project Overview -> Keys. |
 | `AI_DEPLOYMENT_NOT_FOUND` (404) | Deployment name mismatch | Verify `AZURE_OPENAI_DEPLOYMENT` matches the exact deployment name in Azure AI Foundry (e.g. `gpt-4.1-mini`). |
-| `EMBEDDING_DEPLOYMENT_MISSING` (400) | No embedding model deployed in Azure Foundry | Chat models (`gpt-4.1-mini`) cannot generate embeddings. Either deploy `text-embedding-3-small` in Azure Foundry or set `EMBEDDING_PROVIDER=mock` in `.env`. |
-| `AI_RATE_LIMIT_EXCEEDED` (429) | Azure quota or TPM/RPM threshold reached | Increase the Tokens-Per-Minute (TPM) quota in Azure AI Foundry or wait for rate limit cooldown. |
-| `AI_TIMEOUT` (504) | Network latency or request > 60s | Verify network connectivity to `*.services.ai.azure.com` or check Azure region status. |
-| Silent fallback to mock | Previously occurred on missing config | Fixed: The application now strictly raises `AIConfigurationError` rather than silently degrading. |
+| `EMBEDDING_DEPLOYMENT_MISSING` (400) | No embedding model deployed in Azure Foundry | Deploy `text-embedding-3-small` in Azure Foundry or set `EMBEDDING_PROVIDER=mock` in `.env`. |
+| `AI_TIMEOUT` (504) | Network latency or request > 30s | Handled by automatic worker retry policy (`INDEXING_JOB_MAX_RETRIES=2`). Verify network connectivity to Azure endpoint. |
 
 ---
 
